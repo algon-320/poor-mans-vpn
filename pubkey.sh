@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Is stdout attached to TTY?
 if [[ -t 1 ]]; then
