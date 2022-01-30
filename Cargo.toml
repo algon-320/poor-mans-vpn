@@ -1,0 +1,24 @@
+[package]
+name = "poor-mans-vpn"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "0.4.14"
+env_logger = "0.9.0"
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3.3"
+tun-tap = { version = "0.1.2", default-features = false }
+etherparse = "0.10.1"
+ring = "0.16.20"
+toml = "0.5.8"
+
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"

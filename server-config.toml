@@ -1,0 +1,14 @@
+[server]
+bind_address = "10.255.0.3"
+port = 31415
+ifname = "vpn0"
+address = "10.20.30.1"
+private_key = "keys/privkey.der"
+
+[[peers]]
+address = "10.20.30.2"
+public_key = "keys/peer1_pubkey.der"
+
+[[peers]]
+address = "10.20.30.3"
+public_key = "keys/peer2_pubkey.der"
