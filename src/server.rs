@@ -164,8 +164,8 @@ fn main() -> std::io::Result<()> {
                         let mut peers = peers.lock().expect("poisoned");
                         let packet: Vec<u8> = {
                             let src = sealed_packet.source;
-                            let session_key = if let Some(peer) = peers.get_mut(&src) {
-                                &mut peer.session_key
+                            let session_key = if let Some(peer) = peers.get(&src) {
+                                &peer.session_key
                             } else {
                                 log::warn!("unknown peer");
                                 continue;

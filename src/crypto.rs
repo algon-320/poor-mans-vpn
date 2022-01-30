@@ -125,21 +125,24 @@ pub fn generate_seed_pair() -> (PrivSeed, PubSeed) {
 
 /// A nonce generator implements `ring::aead::NonceSequence`.
 pub struct NonceSeq {
+    id: u8,
     next: u128,
 }
 impl NonceSeq {
-    fn new() -> Self {
-        Self { next: 0 }
+    fn new(id: u8) -> Self {
+        Self { id, next: 0 }
     }
 }
 impl aead::NonceSequence for NonceSeq {
     fn advance(&mut self) -> Result<aead::Nonce, Unspecified> {
         let value = self.next;
-        if value >= 0x0001_0000_0000_0000_0000_0000_0000 {
+        if value >= 0x0000_0100_0000_0000_0000_0000_0000 {
             Err(Unspecified)
         } else {
             self.next += 1;
-            let value_bytes = value.to_ne_bytes();
+            let mut value_bytes = value.to_le_bytes();
+            debug_assert!(value_bytes[11] == 0);
+            value_bytes[11] = self.id;
             Ok(aead::Nonce::try_assume_unique_for_key(&value_bytes[..12]).expect("nonce length"))
         }
     }
@@ -147,8 +150,9 @@ impl aead::NonceSequence for NonceSeq {
 
 /// A session key used for communication between a peer and the server.
 pub struct SessionKey {
-    opening: aead::OpeningKey<NonceSeq>,
-    sealing: aead::SealingKey<NonceSeq>,
+    opening: aead::LessSafeKey,
+    sealing: aead::LessSafeKey,
+    nonce_seq: NonceSeq,
 }
 
 impl SessionKey {
@@ -170,65 +174,79 @@ impl SessionKey {
 
     /// Derives a session key for clients.
     pub fn client_derive(privseed: PrivSeed, pubseed: PubSeed) -> Self {
-        use aead::BoundKey;
-
         let privkey = privseed.privkey1;
         let pubkey = agreement::UnparsedPublicKey::new(&agreement::ECDH_P384, pubseed.pubkey1);
         let ubkey = Self::derive(privkey, pubkey);
-        let sealing_key = aead::SealingKey::new(ubkey, NonceSeq::new());
+        let sealing_key = aead::LessSafeKey::new(ubkey);
 
         let privkey = privseed.privkey2;
         let pubkey = agreement::UnparsedPublicKey::new(&agreement::ECDH_P384, pubseed.pubkey2);
         let ubkey = Self::derive(privkey, pubkey);
-        let opening_key = aead::OpeningKey::new(ubkey, NonceSeq::new());
+        let opening_key = aead::LessSafeKey::new(ubkey);
 
         Self {
             opening: opening_key,
             sealing: sealing_key,
+            nonce_seq: NonceSeq::new(1),
         }
     }
 
     /// Derives a session key for the server.
     pub fn server_derive(privseed: PrivSeed, pubseed: PubSeed) -> Self {
-        use aead::BoundKey;
-
         let privkey = privseed.privkey1;
         let pubkey = agreement::UnparsedPublicKey::new(&agreement::ECDH_P384, pubseed.pubkey1);
         let ubkey = Self::derive(privkey, pubkey);
-        let opening_key = aead::OpeningKey::new(ubkey, NonceSeq::new());
+        let opening_key = aead::LessSafeKey::new(ubkey);
 
         let privkey = privseed.privkey2;
         let pubkey = agreement::UnparsedPublicKey::new(&agreement::ECDH_P384, pubseed.pubkey2);
         let ubkey = Self::derive(privkey, pubkey);
-        let sealing_key = aead::SealingKey::new(ubkey, NonceSeq::new());
+        let sealing_key = aead::LessSafeKey::new(ubkey);
 
         Self {
             opening: opening_key,
             sealing: sealing_key,
+            nonce_seq: NonceSeq::new(2),
         }
     }
 
     /// Encrypts any data.
     pub fn seal<A: AsRef<[u8]>, T: Serialize>(&mut self, aad: A, data: T) -> Result<Vec<u8>, ()> {
+        use aead::NonceSequence;
+        let nonce = self.nonce_seq.advance().expect("nonce wear out");
+        let nonce_bytes: [u8; 12] = *nonce.as_ref();
+
+        let aad = aead::Aad::from([aad.as_ref(), &nonce_bytes].concat());
+
         let mut bytes = bincode::serialize(&data).map_err(|_| ())?;
-        let aad = aead::Aad::from(aad);
+
         self.sealing
-            .seal_in_place_append_tag(aad, &mut bytes)
+            .seal_in_place_append_tag(nonce, aad, &mut bytes)
             .map_err(|_| ())?;
+
+        // append the nonce at the end of the ciphertext
+        bytes.extend_from_slice(&nonce_bytes);
         Ok(bytes)
     }
 
     /// Decrypts a ciphertext.
     pub fn unseal<A: AsRef<[u8]>, T: DeserializeOwned>(
-        &mut self,
+        &self,
         aad: A,
         ciphertext: &mut [u8],
     ) -> Result<T, ()> {
-        let aad = aead::Aad::from(aad);
+        let (ciphertext, nonce_bytes) = ciphertext.split_at_mut(ciphertext.len() - aead::NONCE_LEN);
+
+        let nonce_bytes: [u8; aead::NONCE_LEN] = nonce_bytes[..].try_into().expect("nonce len");
+        let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+
+        let aad = aead::Aad::from([aad.as_ref(), &nonce_bytes].concat());
+
         let plaintext = self
             .opening
-            .open_in_place(aad, ciphertext)
+            .open_in_place(nonce, aad, ciphertext)
             .map_err(|_| ())?;
+
         bincode::deserialize(plaintext).map_err(|_| ())
     }
 }

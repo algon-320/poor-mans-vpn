@@ -157,7 +157,7 @@ fn main() -> std::io::Result<()> {
                 match msg {
                     Message::Packet(sealed_packet) => {
                         let packet: Vec<u8> = {
-                            let mut key = session_key.lock().expect("poisoned");
+                            let key = session_key.lock().expect("poisoned");
                             let aad = sealed_packet.addresses_as_bytes();
                             let mut content = sealed_packet.content;
                             match key.unseal(&aad, &mut content) {
