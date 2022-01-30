@@ -160,7 +160,13 @@ fn main() -> std::io::Result<()> {
                             let mut key = session_key.lock().expect("poisoned");
                             let aad = sealed_packet.addresses_as_bytes();
                             let mut content = sealed_packet.content;
-                            key.unseal(&aad, &mut content).expect("Failed to decrypt")
+                            match key.unseal(&aad, &mut content) {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    log::error!("failed to unseal a packet");
+                                    continue;
+                                }
+                            }
                         };
 
                         let (ip_hdr, _payload) = match Ipv4Header::from_slice(&packet) {
@@ -208,7 +214,7 @@ fn main() -> std::io::Result<()> {
         let source = Ipv4Addr::from(ip_hdr.source);
         let destination = Ipv4Addr::from(ip_hdr.destination);
         log::debug!(
-            "send {} bytes: {:?} --> {:?}",
+            "send    {} bytes: {:?} --> {:?}",
             packet.len(),
             source,
             destination,

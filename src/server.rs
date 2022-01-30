@@ -163,14 +163,21 @@ fn main() -> std::io::Result<()> {
                     Message::Packet(mut sealed_packet) => {
                         let mut peers = peers.lock().expect("poisoned");
                         let packet: Vec<u8> = {
-                            if let Some(peer) = peers.get_mut(&sealed_packet.source) {
-                                let aad = sealed_packet.addresses_as_bytes();
-                                peer.session_key
-                                    .unseal(&aad, &mut sealed_packet.content)
-                                    .expect("Failed to decrypt")
+                            let src = sealed_packet.source;
+                            let session_key = if let Some(peer) = peers.get_mut(&src) {
+                                &mut peer.session_key
                             } else {
                                 log::warn!("unknown peer");
                                 continue;
+                            };
+
+                            let aad = sealed_packet.addresses_as_bytes();
+                            match session_key.unseal(&aad, &mut sealed_packet.content) {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    log::error!("failed to unseal a packet");
+                                    continue;
+                                }
                             }
                         };
 
@@ -245,7 +252,7 @@ fn main() -> std::io::Result<()> {
         let source = Ipv4Addr::from(ip_hdr.source);
         let destination = Ipv4Addr::from(ip_hdr.destination);
         log::debug!(
-            "send {} bytes: {:?} --> {:?}",
+            "send    {} bytes: {:?} --> {:?}",
             packet.len(),
             source,
             destination,
