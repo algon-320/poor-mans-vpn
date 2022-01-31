@@ -7,7 +7,7 @@ A super naive, (possibly unreliable), VPN implementation.
 
 You can test the VPN on docker containers.
 `up.sh` script builds the image automatically and launches containers.
-`down.sh` script terminates the contianers.
+`down.sh` script terminates the containers.
 
 Start containers:
 ```
