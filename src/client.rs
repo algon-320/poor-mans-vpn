@@ -22,6 +22,10 @@ mod default_config {
         "vpn0".to_owned()
     }
 
+    pub fn max_transmission_unit() -> u16 {
+        1300
+    }
+
     pub fn server_public_key() -> PathBuf {
         let mut p = PathBuf::new();
         p.push("keys");
@@ -39,8 +43,34 @@ mod default_config {
 
 #[derive(Debug, serde::Deserialize)]
 struct Config {
-    server: ServerConfig,
     peer: PeerConfig,
+    server: ServerConfig,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PeerConfig {
+    /// The name of a network interface to be used.
+    #[serde(default = "default_config::ifname")]
+    ifname: String,
+
+    /// The address to be assigned to the VPN interface.
+    address: Ipv4Addr,
+
+    /// The MTU value of the VPN interface.
+    #[serde(default = "default_config::max_transmission_unit")]
+    mtu: u16,
+
+    /// A path to the public key of the server.
+    #[serde(default = "default_config::private_key")]
+    private_key: PathBuf,
+
+    /// The binding address of the client UDP socket.
+    #[serde(default = "default_config::ipv4_addr_unspecified")]
+    bind_address: Ipv4Addr,
+
+    /// The binding port of the client UDP socket.
+    #[serde(default)] // 0
+    bind_port: u16,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -57,28 +87,6 @@ struct ServerConfig {
     public_key: PathBuf,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct PeerConfig {
-    /// The name of a network interface to be used.
-    #[serde(default = "default_config::ifname")]
-    ifname: String,
-
-    /// The address to be assigned to the VPN interface.
-    address: Ipv4Addr,
-
-    /// A path to the public key of the server.
-    #[serde(default = "default_config::private_key")]
-    private_key: PathBuf,
-
-    /// The binding address of the client UDP socket.
-    #[serde(default = "default_config::ipv4_addr_unspecified")]
-    bind_address: Ipv4Addr,
-
-    /// The binding port of the client UDP socket.
-    #[serde(default)] // 0
-    bind_port: u16,
-}
-
 fn main() -> std::io::Result<()> {
     env_logger::init();
 
@@ -93,7 +101,12 @@ fn main() -> std::io::Result<()> {
         crypto::StaticKeyPair::from_pkcs8(&config.peer.private_key).expect("failed to open key");
     let server_pubkey = std::fs::read(&config.server.public_key)?;
 
-    let iface = setup_tun(&config.peer.ifname, config.peer.address, 24)?;
+    let iface = setup_tun(
+        &config.peer.ifname,
+        config.peer.address,
+        24,
+        config.peer.mtu,
+    )?;
     let iface = Arc::new(iface);
 
     let mut channel = {

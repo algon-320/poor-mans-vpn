@@ -15,13 +15,26 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<(), ()> {
 }
 
 /// Opens a tun device named <ifname>, and configures it with the "ip" utility.
-pub fn setup_tun(ifname: &str, addr: Ipv4Addr, netmask_bit: u8) -> std::io::Result<tun_tap::Iface> {
+pub fn setup_tun(
+    ifname: &str,
+    addr: Ipv4Addr,
+    netmask_bit: u8,
+    mtu: u16,
+) -> std::io::Result<tun_tap::Iface> {
     let iface = tun_tap::Iface::without_packet_info(ifname, tun_tap::Mode::Tun)?;
 
     run_command("ip", &["link", "set", "up", "dev", ifname]).unwrap_or_else(|_| {
         panic!(
             "Failed to setup {}: 'ip link set up dev {}'",
             ifname, ifname
+        );
+    });
+
+    let mtu = mtu.to_string();
+    run_command("ip", &["link", "set", "mtu", &mtu, "dev", ifname]).unwrap_or_else(|_| {
+        panic!(
+            "Failed to setup {}: 'ip link set mtu {} dev {}'",
+            ifname, mtu, ifname
         );
     });
 

@@ -1,6 +1,7 @@
 [peer]
 ifname = "vpn0"
 address = "10.20.30.2"
+mtu = 1300
 private_key = "keys/privkey.der"
 
 [server]

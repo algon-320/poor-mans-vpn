@@ -3,6 +3,7 @@ bind_address = "10.255.0.3"
 port = 31415
 ifname = "vpn0"
 address = "10.20.30.1"
+mtu = 1300
 private_key = "keys/privkey.der"
 
 [[peers]]

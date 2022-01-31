@@ -23,6 +23,10 @@ mod default_config {
         "vpn0".to_owned()
     }
 
+    pub fn max_transmission_unit() -> u16 {
+        1300
+    }
+
     pub fn server_address() -> Ipv4Addr {
         Ipv4Addr::new(10, 20, 30, 1)
     }
@@ -59,6 +63,10 @@ struct ServerConfig {
     #[serde(default = "default_config::server_address")]
     address: Ipv4Addr,
 
+    /// The MTU value of the VPN interface.
+    #[serde(default = "default_config::max_transmission_unit")]
+    mtu: u16,
+
     /// A path to the private key of the server.
     #[serde(default = "default_config::private_key")]
     private_key: PathBuf,
@@ -91,7 +99,12 @@ fn main() -> std::io::Result<()> {
     let static_key_pair =
         crypto::StaticKeyPair::from_pkcs8(&config.server.private_key).expect("failed to open key");
 
-    let iface = setup_tun(&config.server.ifname, config.server.address, 24)?;
+    let iface = setup_tun(
+        &config.server.ifname,
+        config.server.address,
+        24,
+        config.server.mtu,
+    )?;
     let iface = Arc::new(iface);
 
     let sock = UdpSocket::bind((config.server.bind_address, config.server.port))?;
