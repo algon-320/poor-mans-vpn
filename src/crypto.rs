@@ -78,7 +78,6 @@ impl<T: DeserializeOwned> Signed<T> {
 /// It is used to establish a session key between 2 peers.
 #[derive(Debug)]
 pub struct PrivSeed {
-    _rand: Vec<u8>, // TODO: ensure it's actually a nonce to prevent replay attack
     privkey1: agreement::EphemeralPrivateKey,
     privkey2: agreement::EphemeralPrivateKey,
 }
@@ -87,7 +86,6 @@ pub struct PrivSeed {
 /// It is used to establish a session key between 2 peers.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct PubSeed {
-    _rand: Vec<u8>,
     pubkey1: Vec<u8>,
     pubkey2: Vec<u8>,
 }
@@ -96,12 +94,6 @@ pub struct PubSeed {
 pub fn generate_seed_pair() -> (PrivSeed, PubSeed) {
     let rng = rand::SystemRandom::new();
 
-    let rand = {
-        let r: rand::Random<[u8; 64]> = rand::generate(&rng).expect("random");
-        let r = r.expose();
-        r.to_vec()
-    };
-
     let generate_key = agreement::EphemeralPrivateKey::generate;
     let privkey1 = generate_key(&agreement::ECDH_P384, &rng).expect("random");
     let privkey2 = generate_key(&agreement::ECDH_P384, &rng).expect("random");
@@ -109,13 +101,8 @@ pub fn generate_seed_pair() -> (PrivSeed, PubSeed) {
     let pubkey1 = privkey1.compute_public_key().unwrap();
     let pubkey2 = privkey2.compute_public_key().unwrap();
 
-    let privseed = PrivSeed {
-        _rand: rand.clone(),
-        privkey1,
-        privkey2,
-    };
+    let privseed = PrivSeed { privkey1, privkey2 };
     let pubseed = PubSeed {
-        _rand: rand,
         pubkey1: pubkey1.as_ref().to_vec(),
         pubkey2: pubkey2.as_ref().to_vec(),
     };
