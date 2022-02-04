@@ -1,16 +1,21 @@
 pub mod crypto;
+pub mod error;
+
+use error::{Error, Result};
 
 use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 
-fn run_command(cmd: &str, args: &[&str]) -> Result<(), ()> {
+fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
     use std::process::Command;
-    let cmd_status = Command::new(cmd).args(args).status().map_err(|_| ())?;
+    let cmd_status = Command::new(cmd).args(args).status()?;
     if cmd_status.success() {
         Ok(())
     } else {
-        Err(())
+        Err(Error::Setup {
+            msg: format!("command: {} args: {}", cmd, args.join(" ")),
+        })
     }
 }
 
@@ -20,31 +25,16 @@ pub fn setup_tun(
     addr: Ipv4Addr,
     netmask_bit: u8,
     mtu: u16,
-) -> std::io::Result<tun_tap::Iface> {
+) -> Result<tun_tap::Iface> {
     let iface = tun_tap::Iface::without_packet_info(ifname, tun_tap::Mode::Tun)?;
 
-    run_command("ip", &["link", "set", "up", "dev", ifname]).unwrap_or_else(|_| {
-        panic!(
-            "Failed to setup {}: 'ip link set up dev {}'",
-            ifname, ifname
-        );
-    });
+    run_command("ip", &["link", "set", "up", "dev", ifname])?;
 
     let mtu = mtu.to_string();
-    run_command("ip", &["link", "set", "mtu", &mtu, "dev", ifname]).unwrap_or_else(|_| {
-        panic!(
-            "Failed to setup {}: 'ip link set mtu {} dev {}'",
-            ifname, mtu, ifname
-        );
-    });
+    run_command("ip", &["link", "set", "mtu", &mtu, "dev", ifname])?;
 
     let addr = format!("{}/{}", addr, netmask_bit);
-    run_command("ip", &["addr", "add", &addr, "dev", ifname]).unwrap_or_else(|_| {
-        panic!(
-            "Failed to setup {}: 'ip addr add {} dev {}'",
-            ifname, addr, ifname
-        );
-    });
+    run_command("ip", &["addr", "add", &addr, "dev", ifname])?;
 
     Ok(iface)
 }
@@ -84,29 +74,29 @@ impl Channel {
         }
     }
 
-    pub fn recv(&mut self) -> Result<Message, ()> {
-        let nb = self.sock.recv(&mut self.buf[..]).map_err(|_| ())?;
+    pub fn recv(&mut self) -> Result<Message> {
+        let nb = self.sock.recv(&mut self.buf[..])?;
         let slice = &self.buf[..nb];
-        let msg: Message = bincode::deserialize(slice).map_err(|_| ())?;
+        let msg: Message = bincode::deserialize(slice).map_err(|_| error::Error::BrokenMessage)?;
         Ok(msg)
     }
 
-    pub fn recv_from(&mut self) -> Result<(Message, SocketAddr), ()> {
-        let (nb, from) = self.sock.recv_from(&mut self.buf[..]).map_err(|_| ())?;
+    pub fn recv_from(&mut self) -> Result<(Message, SocketAddr)> {
+        let (nb, from) = self.sock.recv_from(&mut self.buf[..])?;
         let slice = &self.buf[..nb];
-        let msg: Message = bincode::deserialize(slice).map_err(|_| ())?;
+        let msg: Message = bincode::deserialize(slice).map_err(|_| error::Error::BrokenMessage)?;
         Ok((msg, from))
     }
 
-    pub fn send(&mut self, msg: &Message) -> Result<(), ()> {
-        let msg = bincode::serialize(msg).map_err(|_| ())?; // FIXME: reduce heap allocation
-        self.sock.send(&msg[..]).map_err(|_| ())?;
+    pub fn send(&mut self, msg: &Message) -> Result<()> {
+        let msg = bincode::serialize(msg).expect("invalid msg"); // TODO: reduce heap allocation
+        self.sock.send(&msg[..])?;
         Ok(())
     }
 
-    pub fn send_to(&mut self, msg: &Message, addr: SocketAddr) -> Result<(), ()> {
-        let msg = bincode::serialize(msg).map_err(|_| ())?; // FIXME: reduce heap allocation
-        self.sock.send_to(&msg[..], addr).map_err(|_| ())?;
+    pub fn send_to(&mut self, msg: &Message, addr: SocketAddr) -> Result<()> {
+        let msg = bincode::serialize(msg).expect("invalid msg"); // FIXME: reduce heap allocation
+        self.sock.send_to(&msg[..], addr)?;
         Ok(())
     }
 }

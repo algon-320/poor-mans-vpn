@@ -1,7 +1,8 @@
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-
 use ring::error::Unspecified;
 use ring::{aead, agreement, pbkdf2, rand, signature};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+use crate::error::{Error, Result};
 
 /// A staticaly generated pair of (ED25519) keys.
 ///
@@ -23,10 +24,10 @@ impl StaticKeyPair {
     /// The content must be in PKCS#8 v1 (or v2) format.
     /// To generate a private key, `genkey.sh` can be used.
     /// $ ./genkey.sh > privkey.der
-    pub fn from_pkcs8<P: AsRef<std::path::Path>>(path: P) -> Result<Self, ()> {
-        let keyfile = std::fs::read(path).map_err(|_| ())?;
-        let key_pair =
-            signature::Ed25519KeyPair::from_pkcs8_maybe_unchecked(&keyfile).map_err(|_| ())?;
+    pub fn from_pkcs8<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let keyfile = std::fs::read(path)?;
+        let key_pair = signature::Ed25519KeyPair::from_pkcs8_maybe_unchecked(&keyfile)
+            .map_err(|_| Error::InvalidPrivateKeyFormat)?;
         Ok(Self { key_pair })
     }
 
@@ -59,17 +60,19 @@ pub struct Signed<T> {
 impl<T> Signed<T> {
     /// Verifies its content with the given public key.
     /// Returns Ok(()) if it was signed by the private one corresponding to the given key.
-    pub fn verify(&self, pubkey: &[u8]) -> Result<(), ()> {
+    pub fn verify(&self, pubkey: &[u8]) -> Result<()> {
         let pubkey = signature::UnparsedPublicKey::new(&signature::ED25519, pubkey);
-        pubkey.verify(&self.data, &self.signature).map_err(|_| ())
+        pubkey
+            .verify(&self.data, &self.signature)
+            .map_err(|_| Error::InvalidSignature)
     }
 }
 
 impl<T: DeserializeOwned> Signed<T> {
     /// Verifies and deserialize its content.
-    pub fn open(self, pubkey: &[u8]) -> Result<T, ()> {
+    pub fn open(self, pubkey: &[u8]) -> Result<T> {
         self.verify(pubkey)?;
-        let val: T = bincode::deserialize(&self.data).expect("broken data");
+        let val: T = bincode::deserialize(&self.data).map_err(|_| Error::BrokenMessage)?;
         Ok(val)
     }
 }
@@ -95,8 +98,8 @@ pub fn generate_seed_pair() -> (PrivSeed, PubSeed) {
     let rng = rand::SystemRandom::new();
 
     let generate_key = agreement::EphemeralPrivateKey::generate;
-    let privkey1 = generate_key(&agreement::ECDH_P384, &rng).expect("random");
-    let privkey2 = generate_key(&agreement::ECDH_P384, &rng).expect("random");
+    let privkey1 = generate_key(&agreement::ECDH_P384, &rng).expect("random source unavailable");
+    let privkey2 = generate_key(&agreement::ECDH_P384, &rng).expect("random source unavailable");
 
     let pubkey1 = privkey1.compute_public_key().unwrap();
     let pubkey2 = privkey2.compute_public_key().unwrap();
@@ -121,7 +124,7 @@ impl NonceSeq {
     }
 }
 impl aead::NonceSequence for NonceSeq {
-    fn advance(&mut self) -> Result<aead::Nonce, Unspecified> {
+    fn advance(&mut self) -> std::result::Result<aead::Nonce, Unspecified> {
         let value = self.next;
         if value >= 0x0000_0100_0000_0000_0000_0000_0000 {
             Err(Unspecified)
@@ -198,18 +201,18 @@ impl SessionKey {
     }
 
     /// Encrypts any data.
-    pub fn seal<A: AsRef<[u8]>, T: Serialize>(&mut self, aad: A, data: T) -> Result<Vec<u8>, ()> {
+    pub fn seal<A: AsRef<[u8]>, T: Serialize>(&mut self, aad: A, data: T) -> Result<Vec<u8>> {
         use aead::NonceSequence;
         let nonce = self.nonce_seq.advance().expect("nonce wear out");
         let nonce_bytes: [u8; 12] = *nonce.as_ref();
 
         let aad = aead::Aad::from([aad.as_ref(), &nonce_bytes].concat());
 
-        let mut bytes = bincode::serialize(&data).map_err(|_| ())?;
+        let mut bytes = bincode::serialize(&data).expect("serialize");
 
         self.sealing
             .seal_in_place_append_tag(nonce, aad, &mut bytes)
-            .map_err(|_| ())?;
+            .expect("seal");
 
         // append the nonce at the end of the ciphertext
         bytes.extend_from_slice(&nonce_bytes);
@@ -221,7 +224,7 @@ impl SessionKey {
         &self,
         aad: A,
         ciphertext: &mut [u8],
-    ) -> Result<T, ()> {
+    ) -> Result<T> {
         let (ciphertext, nonce_bytes) = ciphertext.split_at_mut(ciphertext.len() - aead::NONCE_LEN);
 
         let nonce_bytes: [u8; aead::NONCE_LEN] = nonce_bytes[..].try_into().expect("nonce len");
@@ -232,8 +235,8 @@ impl SessionKey {
         let plaintext = self
             .opening
             .open_in_place(nonce, aad, ciphertext)
-            .map_err(|_| ())?;
+            .map_err(|_| Error::BrokenMessage)?;
 
-        bincode::deserialize(plaintext).map_err(|_| ())
+        bincode::deserialize(plaintext).map_err(|_| Error::BrokenMessage)
     }
 }

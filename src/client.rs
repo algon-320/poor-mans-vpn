@@ -1,8 +1,10 @@
 use etherparse::Ipv4Header;
-use poor_mans_vpn::{crypto, setup_tun, Channel, Message, SealedPacket};
+use poor_mans_vpn::{crypto, error, setup_tun, Channel, Message, SealedPacket};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use error::{Error, Result};
 
 const CONFIG_FILE: &str = "client-config.toml";
 
@@ -87,18 +89,26 @@ struct ServerConfig {
     public_key: PathBuf,
 }
 
-fn main() -> std::io::Result<()> {
+fn print_error<D: std::fmt::Display>(ctx: D, err: Error) {
+    log::error!("{}: {}", ctx, err);
+}
+
+fn main() -> Result<()> {
     env_logger::init();
 
-    let config = {
+    let config: Config = {
         let config_toml = std::fs::read(CONFIG_FILE)?;
-        let config: Config = toml::from_slice(&config_toml).expect("failed to parse config TOML");
-        config
+        match toml::from_slice(&config_toml) {
+            Ok(conf) => conf,
+            Err(_) => {
+                log::error!("failed to parse {:?}", CONFIG_FILE);
+                return Ok(());
+            }
+        }
     };
     log::debug!("config: {:#?}", config);
 
-    let static_key_pair =
-        crypto::StaticKeyPair::from_pkcs8(&config.peer.private_key).expect("failed to open key");
+    let static_key_pair = crypto::StaticKeyPair::from_pkcs8(&config.peer.private_key)?;
     let server_pubkey = std::fs::read(&config.server.public_key)?;
 
     let iface = setup_tun(
@@ -127,7 +137,7 @@ fn main() -> std::io::Result<()> {
             addr: config.peer.address,
             seed: signed_seed,
         };
-        channel.send(&hello).expect("send");
+        channel.send(&hello).expect("send hello");
 
         let msg = channel.recv().expect("recv or parse");
         match msg {
@@ -147,9 +157,12 @@ fn main() -> std::io::Result<()> {
     std::thread::spawn({
         let mut channel = channel.clone();
         move || loop {
+            // FIXME: make `freq` configuarable
             let freq = std::time::Duration::from_secs(5);
             std::thread::sleep(freq);
-            channel.send(&Message::HeartBeat).expect("send");
+            if let Err(err) = channel.send(&Message::HeartBeat) {
+                print_error("heart beat", err);
+            }
         }
     });
 
@@ -160,8 +173,8 @@ fn main() -> std::io::Result<()> {
         move || -> std::io::Result<()> {
             loop {
                 let msg = match channel.recv() {
-                    Err(_) => {
-                        log::error!("broken message");
+                    Err(err) => {
+                        print_error("channel.recv", err);
                         continue;
                     }
                     Ok(msg) => msg,
@@ -175,8 +188,8 @@ fn main() -> std::io::Result<()> {
                             let mut content = sealed_packet.content;
                             match key.unseal(&aad, &mut content) {
                                 Ok(p) => p,
-                                Err(_) => {
-                                    log::error!("failed to unseal a packet");
+                                Err(err) => {
+                                    print_error("unseal", err);
                                     continue;
                                 }
                             }
@@ -184,8 +197,8 @@ fn main() -> std::io::Result<()> {
 
                         let (ip_hdr, _payload) = match Ipv4Header::from_slice(&packet) {
                             Ok(hdr_payload) => hdr_payload,
-                            Err(_) => {
-                                log::debug!("ignored uninteresting packet");
+                            Err(err) => {
+                                log::debug!("ignored uninteresting packet: {}", err);
                                 continue;
                             }
                         };
@@ -204,7 +217,7 @@ fn main() -> std::io::Result<()> {
                     }
 
                     _ => {
-                        panic!("unexpected message");
+                        log::error!("unexpected message");
                     }
                 }
             }
@@ -218,8 +231,8 @@ fn main() -> std::io::Result<()> {
 
         let (ip_hdr, _payload) = match Ipv4Header::from_slice(packet) {
             Ok(hdr_payload) => hdr_payload,
-            Err(_) => {
-                log::debug!("ignored uninteresting packet");
+            Err(err) => {
+                log::debug!("ignored uninteresting packet: {}", err);
                 continue;
             }
         };
@@ -242,6 +255,8 @@ fn main() -> std::io::Result<()> {
         let aad = sealed_packet.addresses_as_bytes();
         sealed_packet.content = key.seal(&aad, packet.to_vec()).expect("Failed to encrypt");
 
-        channel.send(&Message::Packet(sealed_packet)).expect("send");
+        if let Err(err) = channel.send(&Message::Packet(sealed_packet)) {
+            print_error("channel.send", err);
+        }
     }
 }

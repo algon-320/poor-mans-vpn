@@ -1,9 +1,11 @@
 use etherparse::Ipv4Header;
-use poor_mans_vpn::{crypto, setup_tun, Channel, Message, SealedPacket};
+use poor_mans_vpn::{crypto, error, setup_tun, Channel, Message, SealedPacket};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use error::{Error, Result};
 
 const CONFIG_FILE: &str = "server-config.toml";
 
@@ -86,18 +88,26 @@ struct Peer {
     session_key: crypto::SessionKey,
 }
 
-fn main() -> std::io::Result<()> {
+fn print_error<D: std::fmt::Display>(ctx: D, err: Error) {
+    log::error!("{}: {}", ctx, err);
+}
+
+fn main() -> Result<()> {
     env_logger::init();
 
-    let config = {
+    let config: Config = {
         let config_toml = std::fs::read(CONFIG_FILE)?;
-        let config: Config = toml::from_slice(&config_toml).expect("failed to parse config TOML");
-        config
+        match toml::from_slice(&config_toml) {
+            Ok(conf) => conf,
+            Err(_) => {
+                log::error!("failed to parse {}", CONFIG_FILE);
+                return Ok(());
+            }
+        }
     };
     log::debug!("config: {:#?}", config);
 
-    let static_key_pair =
-        crypto::StaticKeyPair::from_pkcs8(&config.server.private_key).expect("failed to open key");
+    let static_key_pair = crypto::StaticKeyPair::from_pkcs8(&config.server.private_key)?;
 
     let iface = setup_tun(
         &config.server.ifname,
@@ -120,8 +130,8 @@ fn main() -> std::io::Result<()> {
         move || -> std::io::Result<()> {
             loop {
                 let (msg, src_addr) = match sock.recv_from() {
-                    Err(_) => {
-                        log::error!("broken message");
+                    Err(err) => {
+                        print_error("receive", err);
                         continue;
                     }
                     Ok(pair) => pair,
@@ -144,8 +154,8 @@ fn main() -> std::io::Result<()> {
                         };
 
                         let client_seed = match client_seed.open(&pubkey) {
-                            Err(_) => {
-                                log::error!("invalid signature");
+                            Err(err) => {
+                                print_error("unseal", err);
                                 continue;
                             }
                             Ok(seed) => seed,
@@ -164,13 +174,19 @@ fn main() -> std::io::Result<()> {
 
                         let signed_seed = static_key_pair.sign(&pub_seed);
                         let reply = Message::HelloReply { seed: signed_seed };
-                        sock.send_to(&reply, src_addr).expect("send");
+                        if let Err(err) = sock.send_to(&reply, src_addr) {
+                            print_error("send", err);
+                            continue;
+                        }
                         log::info!("new connection with {:?} (socket: {:?})", addr, src_addr);
                     }
 
                     Message::HeartBeat => {
                         log::trace!("HeartBeat from {:?}", src_addr);
-                        sock.send_to(&Message::HeartBeat, src_addr).expect("send");
+                        if let Err(err) = sock.send_to(&Message::HeartBeat, src_addr) {
+                            print_error("send", err);
+                            continue;
+                        }
                     }
 
                     Message::Packet(mut sealed_packet) => {
@@ -196,8 +212,8 @@ fn main() -> std::io::Result<()> {
 
                         let (ip_hdr, _payload) = match Ipv4Header::from_slice(&packet) {
                             Ok(hdr_payload) => hdr_payload,
-                            Err(_) => {
-                                log::debug!("ignored uninteresting packet");
+                            Err(err) => {
+                                log::debug!("ignored uninteresting packet: {}", err);
                                 continue;
                             }
                         };
@@ -235,7 +251,10 @@ fn main() -> std::io::Result<()> {
                                     .expect("Failed to encrypt");
 
                                 let packet = Message::Packet(sealed_packet);
-                                sock.send_to(&packet, peer.sock_addr).expect("send");
+                                if let Err(err) = sock.send_to(&packet, peer.sock_addr) {
+                                    print_error("send", err);
+                                    continue;
+                                }
                             } else {
                                 // TODO: handle broadcast packets
                                 log::warn!("unknown peer");
@@ -256,8 +275,8 @@ fn main() -> std::io::Result<()> {
 
         let (ip_hdr, _payload) = match Ipv4Header::from_slice(packet) {
             Ok(hdr_payload) => hdr_payload,
-            Err(_) => {
-                log::debug!("ignored uninteresting packet");
+            Err(err) => {
+                log::debug!("ignored uninteresting packet: {}", err);
                 continue;
             }
         };
@@ -289,7 +308,10 @@ fn main() -> std::io::Result<()> {
                     .expect("Failed to encrypt");
 
                 let packet = Message::Packet(sealed_packet);
-                sock.send_to(&packet, peer.sock_addr).expect("send");
+                if let Err(err) = sock.send_to(&packet, peer.sock_addr) {
+                    print_error("send", err);
+                    continue;
+                }
             } else {
                 log::warn!("unknown peer");
             }
